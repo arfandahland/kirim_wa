@@ -1,0 +1,9 @@
+{
+  "name": "Andri Logistik v14.0 Anti-Ban Enterprise",
+  "description": "Enterprise WA Gateway with Smart Anti-Ban, Supabase Real-time Sync, and Multi-Branch Management.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
