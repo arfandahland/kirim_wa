@@ -26,7 +26,7 @@ const App: React.FC = () => {
           setData(d);
         }
       } catch (e) {
-        console.warn("Backend connection standby...");
+        console.warn("Backend standby...");
       }
     };
     

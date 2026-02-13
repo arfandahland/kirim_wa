@@ -92,7 +92,7 @@ async function startTitan() {
         
         const senderName = m.pushName || "Customer";
         const senderPhone = m.key.remoteJid.split('@')[0];
-        const messageText = m.message.conversation || m.message.extendedTextMessage?.text || "Media/Other";
+        const messageText = m.message.conversation || m.message.extendedTextMessage?.text || "Media Message";
 
         db.stats.received++;
         db.inbox.unshift({ 
@@ -144,7 +144,6 @@ app.post('/webhook/status-update', async (req, res) => {
                 
                 await sock.sendMessage(phone + "@s.whatsapp.net", { text: message });
                 db.stats.sent++;
-                console.log(`✅ NOTIF SENT TO ${phone} (${entry.items.length} items)`);
             } catch (err) {
                 console.error(`❌ FAILED TO SEND TO ${phone}:`, err);
             } finally {
@@ -177,7 +176,6 @@ app.get('/api/status', (req, res) => {
     });
 });
 
-// Catch-all: Kirim index.html untuk SPA
 app.get('*', (req, res) => {
     const indexPath = path.join(buildPath, 'index.html');
     if (fs.existsSync(indexPath)) {

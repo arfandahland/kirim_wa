@@ -14,15 +14,15 @@
     "@google/genai": "1.41.0",
     "lucide-react": "0.446.0",
     "recharts": "2.12.7",
-    "@whiskeysockets/baileys": "^7.0.0-rc.9",
-    "@hapi/boom": "^10.0.1",
     "express": "^5.2.1",
     "qrcode": "^1.5.4",
+    "path": "^0.12.7",
+    "url": "^0.11.4",
     "fs-extra": "^11.3.3",
     "pino": "^10.3.1",
+    "@hapi/boom": "^10.0.1",
     "os": "^0.1.2",
-    "path": "^0.12.7",
-    "url": "^0.11.4"
+    "@whiskeysockets/baileys": "^7.0.0-rc.9"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
