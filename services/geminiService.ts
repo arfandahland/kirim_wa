@@ -1,7 +1,11 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const getAIInstance = () => {
+  const apiKey = typeof process !== 'undefined' ? process.env.API_KEY : undefined;
+  if (!apiKey) return null;
+  return new GoogleGenAI({ apiKey });
+};
 
 export interface AISuggestion {
   message: string;
@@ -9,6 +13,9 @@ export interface AISuggestion {
 }
 
 export const getLogisticsBrainResponse = async (query: string) => {
+  const ai = getAIInstance();
+  if (!ai) return "API_KEY tidak ditemukan.";
+  
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
@@ -28,6 +35,9 @@ export const getLogisticsBrainResponse = async (query: string) => {
 };
 
 export const analyzeAntiBanSettings = async (config: any) => {
+  const ai = getAIInstance();
+  if (!ai) return { score: 0, suggestions: ["API_KEY tidak ditemukan"] };
+
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
