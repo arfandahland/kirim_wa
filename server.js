@@ -28,6 +28,8 @@ app.use(express.json());
 const logger = pino({ level: 'silent' });
 
 let instances = new Map();
+let supabaseClient = null;
+
 let botSettings = {
     isEnabled: true,
     context: "Andri Logistik adalah jasa pengiriman kargo dan paket kilat. Cabang kami meliputi Lelilef, Weda, dan Jakarta. Gudang buka 24 jam. Paket hanya dititipkan 3 hari. Harap siapkan uang pas."
@@ -48,13 +50,25 @@ let db = {
 
 if (!fs.existsSync(SESSIONS_BASE_DIR)) fs.mkdirSync(SESSIONS_BASE_DIR);
 
-// SINKRONISASI SUPABASE DENGAN AGREGASI PINTAR
+// FUNGSI INISIALISASI ULANG SUPABASE
+function initSupabase() {
+    if (supabaseSettings.url && supabaseSettings.key) {
+        try {
+            supabaseClient = createClient(supabaseSettings.url, supabaseSettings.key);
+            console.log("✅ Supabase Client Re-Initialized");
+        } catch (e) {
+            console.error("❌ Supabase Init Error:", e.message);
+            supabaseClient = null;
+        }
+    }
+}
+
+// SINKRONISASI OTOMATIS
 async function startSupabaseSync() {
-    if (!supabaseSettings.isEnabled || !supabaseSettings.url || !supabaseSettings.key) return;
+    if (!supabaseSettings.isEnabled || !supabaseClient) return;
 
     try {
-        const supabase = createClient(supabaseSettings.url, supabaseSettings.key);
-        const { data, error } = await supabase
+        const { data, error } = await supabaseClient
             .from(supabaseSettings.tableName)
             .select('*')
             .eq('wa_sent', false)
@@ -62,20 +76,20 @@ async function startSupabaseSync() {
 
         if (error) throw error;
         if (data && data.length > 0) {
-            console.log(`[Supabase] Mengolah ${data.length} paket baru...`);
-            await processPackageAggregation(data, supabase);
+            console.log(`[Supabase] Mengolah ${data.length} paket...`);
+            await processPackageAggregation(data);
         }
         supabaseSettings.lastSync = new Date().toISOString();
     } catch (e) {
-        console.error("[Supabase Error]", e.message);
+        console.error("[Polling Error]", e.message);
     }
 }
 
-// LOGIKA AGREGASI: Menggabungkan paket berdasarkan Nomor HP
-async function processPackageAggregation(rawData, supabase) {
+async function processPackageAggregation(rawData) {
     const activeAccounts = Array.from(instances.values()).filter(i => i.status === 'CONNECTED');
     if (activeAccounts.length === 0) return;
 
+    // Grouping by phone number
     const groups = rawData.reduce((acc, item) => {
         const phone = item.customer_phone.replace(/[^0-9]/g, "");
         if (!acc[phone]) acc[phone] = { items: [], name: item.customer_name, branch: item.branch_name };
@@ -93,27 +107,25 @@ async function processPackageAggregation(rawData, supabase) {
         group.items.forEach((pkg, idx) => {
             const price = pkg.price || 0;
             totalPrice += price;
-            packageList += `• *${pkg.resi}* | ${pkg.item_name || 'Paket'} (Rp${price.toLocaleString()})\n`;
+            packageList += `${idx + 1}. *${pkg.resi}* - ${pkg.item_name || 'Paket'} (Rp${price.toLocaleString()})\n`;
         });
 
-        const text = `📦 *UPDATE ANDRI LOGISTIK [CABANG ${group.branch?.toUpperCase() || 'WEDA'}]*\n\nHalo Kak *${group.name}*,\n\nAda *${group.items.length} paket* Anda yang sudah tiba di gudang kami:\n\n${packageList}\n💰 *TOTAL TAGIHAN: Rp${totalPrice.toLocaleString()}*\n\n━━━━━━━━━━━━━━━\n⚠️ *PENTING*:\n1. Mohon siapkan *UANG PAS*.\n2. Paket hanya tertahan *3 HARI* di gudang.\n3. Harap segera diambil di cabang terkait.\n━━━━━━━━━━━━━━━\n_Andri Logistik Bot System_`;
+        const text = `📦 *UPDATE ANDRI LOGISTIK [CABANG ${group.branch?.toUpperCase() || 'WEDA'}]*\n\nHalo *${group.name}*,\n\nAda *${group.items.length} paket* tiba di gudang:\n\n${packageList}\n💰 *TOTAL TAGIHAN: Rp${totalPrice.toLocaleString()}*\n\n━━━━━━━━━━━━━━━\n⚠️ *PENTING*:\n1. Mohon siapkan *UANG PAS*.\n2. Paket ditahan *3 HARI*.\n3. Harap segera diambil.\n━━━━━━━━━━━━━━━\n_Andri Logistik Bot_`;
 
         try {
             await inst.sock.sendPresenceUpdate('composing', jid);
-            await delay(3000); // Simulasi mengetik agar lebih aman (Anti-Ban)
+            await delay(2000);
             await inst.sock.sendMessage(jid, { text });
             
             const ids = group.items.map(i => i.id);
-            await supabase.from(supabaseSettings.tableName).update({ wa_sent: true }).in('id', ids);
+            await supabaseClient.from(supabaseSettings.tableName).update({ wa_sent: true }).in('id', ids);
 
             db.stats.sent++;
             db.stats.aggregated += group.items.length - 1;
-            db.logs.push({ id: Date.now(), type: 'AUTO', to: phone, msg: `Sent ${group.items.length} resis aggregated` });
+            db.logs.push({ id: Date.now(), type: 'AUTO', to: phone, msg: `Sent ${group.items.length} aggregated` });
             accIdx++;
-            await delay(10000 + Math.random() * 5000); // Delay panjang antar nomor (Anti-Ban)
-        } catch (e) {
-            console.error(`Gagal mengirim ke ${phone}:`, e.message);
-        }
+            await delay(5000 + Math.random() * 5000); 
+        } catch (e) {}
     }
 }
 
@@ -125,12 +137,9 @@ async function initWAInstance(sessionId) {
     const { version } = await fetchLatestBaileysVersion();
     
     const sock = makeWASocket({ 
-        version, 
-        auth: state, 
-        logger,
+        version, auth: state, logger,
         browser: ["Andri Logistik Elite", "Chrome", "20.0"],
-        printQRInTerminal: false,
-        markOnlineOnConnect: true
+        printQRInTerminal: false
     });
 
     instances.set(sessionId, { id: sessionId, sock, qr: null, status: 'INITIALIZING', number: null });
@@ -138,10 +147,7 @@ async function initWAInstance(sessionId) {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         const inst = instances.get(sessionId);
-        if (qr) { 
-            inst.qr = await QRCode.toDataURL(qr); 
-            inst.status = 'WAITING_SCAN'; 
-        }
+        if (qr) { inst.qr = await QRCode.toDataURL(qr); inst.status = 'WAITING_SCAN'; }
         if (connection === 'open') { 
             inst.status = 'CONNECTED'; 
             inst.qr = null;
@@ -149,9 +155,8 @@ async function initWAInstance(sessionId) {
         }
         if (connection === 'close') { 
             const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            if (reason !== DisconnectReason.loggedOut) {
-                initWAInstance(sessionId); 
-            } else {
+            if (reason !== DisconnectReason.loggedOut) initWAInstance(sessionId); 
+            else {
                 instances.delete(sessionId);
                 await fs.remove(sessionPath);
             }
@@ -199,6 +204,12 @@ app.get('/api/status', (req, res) => {
 
 app.post('/api/supabase-settings', (req, res) => {
     supabaseSettings = { ...supabaseSettings, ...req.body };
+    initSupabase(); // Langsung re-init begitu setting diterima
+    res.json({ success: true });
+});
+
+app.post('/api/bot-settings', (req, res) => {
+    botSettings = { ...botSettings, ...req.body };
     res.json({ success: true });
 });
 
@@ -223,6 +234,6 @@ app.use(express.static(buildPath));
 app.get('*', (req, res) => res.sendFile(path.join(buildPath, 'index.html')));
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Andri Logistik v17.0 Ultra-Instinct VPS-READY on ${PORT}`);
+    console.log(`🚀 Andri Logistik v18.0 Ultra-Instinct VPS-READY on ${PORT}`);
     fs.readdir(SESSIONS_BASE_DIR).then(dirs => dirs.forEach(d => initWAInstance(d)));
 });

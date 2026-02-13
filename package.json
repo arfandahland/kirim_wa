@@ -15,15 +15,15 @@
     "recharts": "2.12.7",
     "@google/genai": "1.41.0",
     "@supabase/supabase-js": "2.45.4",
-    "express": "^5.2.1",
-    "qrcode": "^1.5.4",
-    "fs-extra": "^11.3.3",
     "path": "^0.12.7",
-    "os": "^0.1.2",
-    "url": "^0.11.4",
+    "qrcode": "^1.5.4",
     "@hapi/boom": "^10.0.1",
+    "pino": "^10.3.1",
+    "url": "^0.11.4",
+    "express": "^5.2.1",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
-    "pino": "^10.3.1"
+    "os": "^0.1.2",
+    "fs-extra": "^11.3.3"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
