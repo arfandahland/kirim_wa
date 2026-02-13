@@ -1,15 +1,8 @@
-
-import { GoogleGenAI, Type } from "@google/genai";
-
-const getAIInstance = () => {
-  const apiKey = typeof process !== 'undefined' ? process.env.API_KEY : undefined;
-  if (!apiKey) return null;
-  return new GoogleGenAI({ apiKey });
-};
+import { GoogleGenAI } from "@google/genai";
 
 export const getBotReply = async (incomingMsg: string, context: string = "") => {
-  const ai = getAIInstance();
-  if (!ai) return null;
+  // Always initialize a new GoogleGenAI instance for each request using process.env.API_KEY directly as per guidelines.
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
   try {
     const response = await ai.models.generateContent({
@@ -30,6 +23,7 @@ export const getBotReply = async (incomingMsg: string, context: string = "") => 
         temperature: 0.7,
       },
     });
+    // Use the .text property to get the generated text from the response object.
     return response.text;
   } catch (error) {
     console.error("AI Bot Error:", error);
@@ -38,8 +32,8 @@ export const getBotReply = async (incomingMsg: string, context: string = "") => 
 };
 
 export const getLogisticsBrainResponse = async (query: string) => {
-  const ai = getAIInstance();
-  if (!ai) return "API_KEY tidak ditemukan.";
+  // Always initialize a new GoogleGenAI instance for each request using process.env.API_KEY directly as per guidelines.
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   try {
     const response = await ai.models.generateContent({
@@ -49,8 +43,10 @@ export const getLogisticsBrainResponse = async (query: string) => {
         systemInstruction: "Anda adalah Andri Logistics Brain. Berikan saran logistik dan strategi anti-ban WA yang paling mutakhir.",
       },
     });
+    // Use the .text property to get the generated text from the response object.
     return response.text;
   } catch (error) {
+    console.error("Logistics Brain Error:", error);
     return "Maaf, sistem AI sedang maintenance.";
   }
 };
