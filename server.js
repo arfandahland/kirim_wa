@@ -4,8 +4,7 @@ import {
     useMultiFileAuthState, 
     DisconnectReason, 
     fetchLatestBaileysVersion, 
-    delay,
-    makeInMemoryStore
+    delay
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import express from 'express';
@@ -15,150 +14,244 @@ import pino from 'pino';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { getBotReply } from './services/geminiService.js';
+import { createClient } from '@supabase/supabase-js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 8080; 
-const SESSION_DIR = './sessions';
+const SESSIONS_BASE_DIR = './sessions';
 
 app.use(express.json());
 const logger = pino({ level: 'silent' });
-const store = makeInMemoryStore({ logger });
+
+let instances = new Map();
+let botSettings = {
+    isEnabled: true,
+    context: "Andri Logistik adalah jasa pengiriman kargo dan paket kilat. Kami melayani pengiriman motor, barang pindahan, dan paket e-commerce. Gudang pusat berlokasi di Jakarta Timur. Jam operasional 08:00 - 22:00."
+};
+
+let supabaseSettings = {
+    url: '',
+    key: '',
+    tableName: 'deliveries',
+    isEnabled: false,
+    lastSync: null
+};
 
 let db = {
-    stats: { sent: 0, received: 0, hits: 0 },
-    settings: { ai_mode: true, auto_read: true, typing: true, anti_ban: true },
-    inbox: [],
+    stats: { sent: 0, received: 0, botReplies: 0, aggregated: 0 },
     logs: [],
-    chartData: []
 };
 
-// Generate chart data dummy
-const updateChartData = () => {
-    const time = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
-    db.chartData.push({ name: time, val: Math.floor(Math.random() * 100) });
-    if (db.chartData.length > 20) db.chartData.shift();
-};
-setInterval(updateChartData, 60000);
+if (!fs.existsSync(SESSIONS_BASE_DIR)) fs.mkdirSync(SESSIONS_BASE_DIR);
 
-let pendingNotifications = new Map();
-let qrCodeData = null;
-let isConnected = false;
-let sock;
+// SUPABASE SYNC ENGINE
+async function startSupabaseSync() {
+    if (!supabaseSettings.isEnabled || !supabaseSettings.url || !supabaseSettings.key) return;
 
-if (!fs.existsSync(SESSION_DIR)) {
-    fs.mkdirSync(SESSION_DIR);
+    try {
+        const supabase = createClient(supabaseSettings.url, supabaseSettings.key);
+        // Ambil data yang berstatus 'RECEIVED' dan belum dikirim WA nya
+        const { data, error } = await supabase
+            .from(supabaseSettings.tableName)
+            .select('*')
+            .eq('wa_sent', false)
+            .eq('status', 'RECEIVED');
+
+        if (error) throw error;
+        if (data && data.length > 0) {
+            console.log(`[Supabase] Found ${data.length} pending updates.`);
+            await processAggregatedMessages(data, supabase);
+        }
+        supabaseSettings.lastSync = new Date().toISOString();
+    } catch (e) {
+        console.error("[Supabase Sync Error]", e.message);
+    }
 }
 
-const buildPath = path.join(__dirname, 'dist');
-app.use(express.static(buildPath));
+// Logic Penggabungan Paket per Nomor HP
+async function processAggregatedMessages(rawData, supabase) {
+    const activeAccounts = Array.from(instances.values()).filter(i => i.status === 'CONNECTED');
+    if (activeAccounts.length === 0) return;
 
-async function startTitan() {
-    const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
+    // Grouping by phone number
+    const groups = rawData.reduce((acc, item) => {
+        const phone = item.customer_phone.replace(/[^0-9]/g, "");
+        if (!acc[phone]) acc[phone] = { items: [], name: item.customer_name, branch: item.branch_name };
+        acc[phone].items.push(item);
+        return acc;
+    }, {});
+
+    let accIdx = 0;
+    for (const [phone, group] of Object.entries(groups)) {
+        const inst = activeAccounts[accIdx % activeAccounts.length];
+        const jid = (phone.startsWith('62') ? phone : '62' + phone) + "@s.whatsapp.net";
+        
+        // Buat daftar resi dan rincian harga
+        let packageList = "";
+        let totalPrice = 0;
+        group.items.forEach((pkg, idx) => {
+            const price = pkg.price || 0;
+            totalPrice += price;
+            packageList += `${idx + 1}. *${pkg.resi}* - ${pkg.item_name || 'Paket'} (Rp${price.toLocaleString()})\n`;
+        });
+
+        const text = `📦 *UPDATE ANDRI LOGISTIK [${group.branch || 'PUSAT'}]*\n\nHalo *${group.name}*,\n\nAnda memiliki *${group.items.length} paket* yang telah tiba di gudang kami:\n\n${packageList}\n💰 *TOTAL TAGIHAN: Rp${totalPrice.toLocaleString()}*\n\n━━━━━━━━━━━━━━━\n⚠️ *PENTING*:\n- Mohon siapkan *UANG PAS*.\n- Paket hanya tertahan *3 HARI* di gudang.\n- Harap segera diambil.\n━━━━━━━━━━━━━━━\n_Sent via node: ${inst.number}_`;
+
+        try {
+            await inst.sock.sendPresenceUpdate('composing', jid);
+            await delay(2000);
+            await inst.sock.sendMessage(jid, { text });
+            
+            // Tandai di Supabase bahwa sudah terkirim
+            const ids = group.items.map(i => i.id);
+            await supabase.from(supabaseSettings.tableName).update({ wa_sent: true }).in('id', ids);
+
+            db.stats.sent++;
+            db.stats.aggregated += group.items.length - 1;
+            accIdx++;
+            await delay(5000 + Math.random() * 5000); // Anti-ban delay
+        } catch (e) {
+            console.error(`Failed to send to ${phone}`, e.message);
+        }
+    }
+}
+
+// Jalankan sync setiap 60 detik
+setInterval(startSupabaseSync, 60000);
+
+async function initWAInstance(sessionId) {
+    const sessionPath = path.join(SESSIONS_BASE_DIR, sessionId);
+    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     const { version } = await fetchLatestBaileysVersion();
     
-    sock = makeWASocket({ 
-        version, 
-        auth: state, 
-        logger,
-        browser: ["Andri Logistik Ultra", "Chrome", "15.0"],
-        markOnlineOnConnect: true,
-        printQRInTerminal: true
+    const sock = makeWASocket({ 
+        version, auth: state, logger,
+        browser: ["Andri Logistik Elite", "Chrome", "20.0"],
+        printQRInTerminal: false
     });
 
-    if (store) store.bind(sock.ev);
+    instances.set(sessionId, { id: sessionId, sock, qr: null, status: 'INITIALIZING', number: null });
 
-    sock.ev.on('connection.update', async (u) => {
-        const { connection, lastDisconnect, qr } = u;
-        if (qr) qrCodeData = await QRCode.toDataURL(qr);
-        
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+        const inst = instances.get(sessionId);
+        if (qr) { inst.qr = await QRCode.toDataURL(qr); inst.status = 'WAITING_SCAN'; }
         if (connection === 'open') { 
-            isConnected = true; 
-            qrCodeData = null; 
-            console.log("✅ ANDRI LOGISTIK ENGINE v15.0 ACTIVE"); 
+            inst.status = 'CONNECTED'; 
+            inst.qr = null;
+            inst.number = sock.user.id.split(':')[0];
         }
-        
         if (connection === 'close') { 
-            isConnected = false; 
             const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            if (reason !== DisconnectReason.loggedOut) startTitan(); 
+            if (reason !== DisconnectReason.loggedOut) initWAInstance(sessionId); 
+            else {
+                instances.delete(sessionId);
+                await fs.remove(sessionPath);
+            }
         }
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('messages.upsert', async ({ messages }) => {
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return;
         const m = messages[0];
         if (!m.message || m.key.fromMe) return;
-        
+        const sender = m.key.remoteJid;
+        const msgText = m.message.conversation || m.message.extendedTextMessage?.text || "";
         db.stats.received++;
-        db.inbox.unshift({ 
-            id: Date.now(),
-            time: new Date().toLocaleTimeString(), 
-            name: m.pushName || "Customer", 
-            phone: m.key.remoteJid.split('@')[0], 
-            msg: m.message.conversation || m.message.extendedTextMessage?.text || "Pesan Media"
-        });
-        if (db.inbox.length > 50) db.inbox.pop();
+
+        if (botSettings.isEnabled && msgText.length > 3) {
+            const reply = await getBotReply(msgText, botSettings.context);
+            if (reply) {
+                await sock.sendPresenceUpdate('composing', sender);
+                await delay(2000);
+                await sock.sendMessage(sender, { text: reply });
+                db.stats.botReplies++;
+                db.logs.push({ id: Date.now(), type: 'BOT', to: sender.split('@')[0], msg: msgText, reply: reply.substring(0, 50) + "..." });
+            }
+        }
     });
 }
 
-// API KIRIM MASSAL DENGAN ANTI-BAN
-app.post('/api/send-mass', async (req, res) => {
-    const { messages } = req.body;
-    if (!isConnected) return res.status(500).json({ error: "WA Disconnected" });
-    
-    res.json({ status: "processing", total: messages.length });
-
-    for (const item of messages) {
-        try {
-            const phone = item.phone.replace(/[^0-9]/g, "");
-            const jid = (phone.startsWith('0') ? '62' + phone.slice(1) : phone) + "@s.whatsapp.net";
-            
-            const variants = [
-                `📦 *UPDATE ANDRI LOGISTIK*`,
-                `📦 *INFO PAKET ANDRI LOGISTIK*`,
-                `📦 *NOTIFIKASI PENGIRIMAN*`
-            ];
-            const header = variants[Math.floor(Math.random() * variants.length)];
-
-            const text = `${header}\n\nHalo *${item.name}*,\n\nPaket Anda dengan resi *${item.resi}* saat ini berstatus: _${item.status}_\n\n━━━━━━━━━━━━━━━\n⚠️ *PENTING*:\n- *Mohon siapkan uang pas*\n- *Batas ambil maks 3 hari*\n━━━━━━━━━━━━━━━\n_Generated by Andri Engine v15.0_`;
-            
-            await sock.sendMessage(jid, { text });
-            db.stats.sent++;
-            
-            // Jeda acak manusiawi
-            await delay(5000 + Math.random() * 10000);
-        } catch (e) {
-            console.error("Batch send error:", e);
-        }
-    }
-});
-
 app.get('/api/status', (req, res) => {
     res.json({ 
-        isConnected, 
-        stats: db.stats, 
-        inbox: db.inbox, 
-        logs: db.logs, 
-        qr: qrCodeData,
-        chartData: db.chartData,
-        system: { 
-            ram: ((os.totalmem() - os.freemem())/1024/1024/1024).toFixed(2) + " GB", 
-            cpu: (os.loadavg()[0]*10).toFixed(1) + "%" 
-        }
+        accounts: Array.from(instances.values()).map(i => ({ id: i.id, status: i.status, qr: i.qr, number: i.number })),
+        stats: db.stats,
+        logs: db.logs.slice(-20).reverse(),
+        botSettings,
+        supabaseSettings,
+        system: { ram: (os.freemem()/1024/1024/1024).toFixed(2) + "GB Free", cpu: os.loadavg()[0].toFixed(2) }
     });
 });
 
-app.get('*', (req, res) => {
-    const indexPath = path.join(buildPath, 'index.html');
-    if (fs.existsSync(indexPath)) res.sendFile(indexPath);
-    else res.status(404).send("Frontend build not found.");
+app.post('/api/supabase-settings', (req, res) => {
+    supabaseSettings = { ...supabaseSettings, ...req.body };
+    res.json({ success: true });
 });
 
+app.post('/api/bot-settings', (req, res) => {
+    botSettings = { ...botSettings, ...req.body };
+    res.json({ success: true });
+});
+
+app.post('/api/add-account', async (req, res) => {
+    const id = `NODE-${Date.now()}`;
+    await initWAInstance(id);
+    res.json({ id });
+});
+
+app.delete('/api/account/:id', async (req, res) => {
+    const inst = instances.get(req.params.id);
+    if (inst) {
+        inst.sock.logout();
+        instances.delete(req.params.id);
+        await fs.remove(path.join(SESSIONS_BASE_DIR, req.params.id));
+    }
+    res.json({ success: true });
+});
+
+app.post('/api/send-mass', async (req, res) => {
+    const { messages } = req.body;
+    const activeAccounts = Array.from(instances.values()).filter(i => i.status === 'CONNECTED');
+    if (activeAccounts.length === 0) return res.status(500).send("No active accounts");
+    res.json({ status: "started" });
+
+    // Logic grouping juga diterapkan di manual send
+    const groups = messages.reduce((acc, item) => {
+        if (!acc[item.phone]) acc[item.phone] = { items: [], name: item.name };
+        acc[item.phone].items.push(item);
+        return acc;
+    }, {});
+
+    let accIdx = 0;
+    for (const [phone, group] of Object.entries(groups)) {
+        const inst = activeAccounts[accIdx % activeAccounts.length];
+        const jid = (phone.startsWith('62') ? phone : '62' + phone) + "@s.whatsapp.net";
+        
+        let packageList = group.items.map((it, idx) => `${idx+1}. *${it.resi}* (${it.status})`).join('\n');
+        const text = `📦 *ANDRI LOGISTIK MANUAL DISPATCH*\n\nHalo *${group.name}*,\n\nStatus Paket Anda:\n${packageList}\n\nMohon siapkan uang pas & ambil maks 3 hari.\n_Sent via node: ${inst.number}_`;
+        
+        try {
+            await inst.sock.sendPresenceUpdate('composing', jid);
+            await delay(1500);
+            await inst.sock.sendMessage(jid, { text });
+            db.stats.sent++;
+            accIdx++;
+            await delay(5000 + Math.random() * 5000);
+        } catch (e) {}
+    }
+});
+
+const buildPath = path.join(__dirname, 'dist');
+app.use(express.static(buildPath));
+app.get('*', (req, res) => res.sendFile(path.join(buildPath, 'index.html')));
+
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Andri Logistik Engine running on port ${PORT}`);
-    startTitan();
+    console.log(`🔥 Andri Logistik v16.0 Ultra-Instinct running on ${PORT}`);
+    fs.readdir(SESSIONS_BASE_DIR).then(dirs => dirs.forEach(d => initWAInstance(d)));
 });

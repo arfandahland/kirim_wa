@@ -4,18 +4,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Andri Logistik v15.0 Ultra-Instinct</title>
+    <title>Andri Logistik v16.0 Ultra-Instinct</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #020203; }
         .glass { background: rgba(255, 255, 255, 0.02); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.05); }
-        .neon-border { border: 1px solid rgba(99, 102, 241, 0.2); box-shadow: 0 0 20px rgba(99, 102, 241, 0.05); }
         .custom-scroll::-webkit-scrollbar { width: 4px; }
         .custom-scroll::-webkit-scrollbar-track { background: transparent; }
         .custom-scroll::-webkit-scrollbar-thumb { background: #1e1e2e; border-radius: 20px; }
-        .animate-glow { animation: glow 2s infinite alternate; }
-        @keyframes glow { from { box-shadow: 0 0 5px rgba(99, 102, 241, 0.2); } to { box-shadow: 0 0 20px rgba(99, 102, 241, 0.5); } }
     </style>
 <script type="importmap">
 {
@@ -28,15 +25,16 @@
     "lucide-react": "https://esm.sh/lucide-react@0.446.0?external=react",
     "recharts": "https://esm.sh/recharts@2.12.7?external=react,react-dom",
     "@google/genai": "https://esm.sh/@google/genai@1.41.0",
-    "@whiskeysockets/baileys": "https://esm.sh/@whiskeysockets/baileys@^7.0.0-rc.9",
-    "@hapi/boom": "https://esm.sh/@hapi/boom@^10.0.1",
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.45.4",
     "express": "https://esm.sh/express@^5.2.1",
     "qrcode": "https://esm.sh/qrcode@^1.5.4",
     "fs-extra": "https://esm.sh/fs-extra@^11.3.3",
-    "pino": "https://esm.sh/pino@^10.3.1",
-    "os": "https://esm.sh/os@^0.1.2",
     "path": "https://esm.sh/path@^0.12.7",
-    "url": "https://esm.sh/url@^0.11.4"
+    "os": "https://esm.sh/os@^0.1.2",
+    "url": "https://esm.sh/url@^0.11.4",
+    "@hapi/boom": "https://esm.sh/@hapi/boom@^10.0.1",
+    "@whiskeysockets/baileys": "https://esm.sh/@whiskeysockets/baileys@^7.0.0-rc.9",
+    "pino": "https://esm.sh/pino@^10.3.1"
   }
 }
 </script>
