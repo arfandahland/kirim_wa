@@ -109,47 +109,72 @@ async function processPackages(data) {
 setInterval(syncPackages, 60000);
 
 async function initWA(id) {
-    const sessionPath = path.join(SESSIONS_DIR, id);
-    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-    const { version } = await fetchLatestBaileysVersion();
-    
-    const sock = makeWASocket({ 
-        version, auth: state, logger,
-        browser: ["Andri Logistik v30", "Chrome", "1.0.0"]
-    });
+    try {
+        const sessionPath = path.join(SESSIONS_DIR, id);
+        const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+        const { version } = await fetchLatestBaileysVersion();
+        
+        const sock = makeWASocket({ 
+            version, auth: state, logger,
+            browser: ["Andri Logistik v30", "Chrome", "1.0.0"]
+        });
 
-    instances.set(id, { id, sock, qr: null, status: 'STARTING', number: null });
+        instances.set(id, { id, sock, qr: null, status: 'STARTING', number: null });
 
-    sock.ev.on('connection.update', async (upd) => {
-        const { connection, lastDisconnect, qr } = upd;
-        const inst = instances.get(id);
-        if (qr) { inst.qr = await QRCode.toDataURL(qr); inst.status = 'QR_READY'; }
-        if (connection === 'open') { inst.status = 'CONNECTED'; inst.qr = null; inst.number = sock.user.id.split(':')[0]; }
-        if (connection === 'close') {
-            const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
-            if (code !== DisconnectReason.loggedOut) initWA(id);
-            else { instances.delete(id); await fs.remove(sessionPath); }
-        }
-    });
+        sock.ev.on('connection.update', async (upd) => {
+            const { connection, lastDisconnect, qr } = upd;
+            const inst = instances.get(id);
+            if (!inst) return;
 
-    sock.ev.on('creds.update', saveCreds);
-
-    sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return;
-        const m = messages[0];
-        if (!m.message || m.key.fromMe) return;
-        const from = m.key.remoteJid;
-        const text = m.message.conversation || m.message.extendedTextMessage?.text || "";
-        stats.received++;
-
-        if (settings.bot.isEnabled && text.length > 2) {
-            const reply = await getBotReply(text, settings.bot.context);
-            if (reply) {
-                await sock.sendMessage(from, { text: reply });
-                stats.bot++;
+            if (qr) { 
+                try {
+                    inst.qr = await QRCode.toDataURL(qr); 
+                    inst.status = 'QR_READY'; 
+                } catch (e) { console.error("QR Error", e); }
             }
-        }
-    });
+            
+            if (connection === 'open') { 
+                inst.status = 'CONNECTED'; 
+                inst.qr = null; 
+                inst.number = sock.user.id.split(':')[0]; 
+                console.log(`Node ${id} connected as ${inst.number}`);
+            }
+            
+            if (connection === 'close') {
+                const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
+                if (code !== DisconnectReason.loggedOut) {
+                    console.log(`Node ${id} reconnecting...`);
+                    initWA(id);
+                } else {
+                    console.log(`Node ${id} logged out. Cleaning up...`);
+                    instances.delete(id); 
+                    await fs.remove(sessionPath).catch(() => {});
+                }
+            }
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+
+        sock.ev.on('messages.upsert', async ({ messages, type }) => {
+            if (type !== 'notify') return;
+            const m = messages[0];
+            if (!m.message || m.key.fromMe) return;
+            const from = m.key.remoteJid;
+            const text = m.message.conversation || m.message.extendedTextMessage?.text || "";
+            stats.received++;
+
+            if (settings.bot.isEnabled && text.length > 2) {
+                const reply = await getBotReply(text, settings.bot.context);
+                if (reply) {
+                    await sock.sendMessage(from, { text: reply });
+                    stats.bot++;
+                }
+            }
+        });
+    } catch (err) {
+        console.error(`Fatal error in initWA for ${id}:`, err);
+        instances.delete(id);
+    }
 }
 
 // REST API
@@ -171,15 +196,22 @@ app.post('/api/settings/:type', (req, res) => {
     res.json({ success: true });
 });
 
-app.post('/api/node', async (req, res) => {
+app.post('/api/node', (req, res) => {
     const id = `NODE-${Date.now()}`;
-    await initWA(id);
-    res.json({ id });
+    // Jangan gunakan await di sini agar respon HTTP segera dikirim
+    initWA(id); 
+    res.json({ success: true, id });
 });
 
 app.delete('/api/node/:id', async (req, res) => {
     const inst = instances.get(req.params.id);
-    if (inst) { inst.sock.logout().catch(() => {}); instances.delete(req.params.id); await fs.remove(path.join(SESSIONS_DIR, req.params.id)); }
+    if (inst) { 
+        try {
+            await inst.sock.logout().catch(() => {}); 
+        } catch (e) {}
+        instances.delete(req.params.id); 
+        await fs.remove(path.join(SESSIONS_DIR, req.params.id)).catch(() => {}); 
+    }
     res.json({ success: true });
 });
 
@@ -189,5 +221,13 @@ app.get('*', (req, res) => res.sendFile(path.join(dist, 'index.html')));
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🔥 v30.0 SINGULARITY ENGINE READY PORT ${PORT}`);
-    fs.readdir(SESSIONS_DIR).then(dirs => dirs.forEach(d => initWA(d)));
+    // Auto restore sessions on startup
+    if (fs.existsSync(SESSIONS_DIR)) {
+        fs.readdirSync(SESSIONS_DIR).forEach(d => {
+            if (fs.statSync(path.join(SESSIONS_DIR, d)).isDirectory()) {
+                console.log(`Restoring session: ${d}`);
+                initWA(d);
+            }
+        });
+    }
 });
